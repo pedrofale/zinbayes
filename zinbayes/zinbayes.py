@@ -63,18 +63,25 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 		log_library_size = np.log(np.sum(X, axis=1))
 		self.mean_llib, self.std_llib = np.mean(log_library_size), np.std(log_library_size)
 
-		# Create ZINBayes computation graph
-		self.define_model(N, P, self.n_components, batch_idx=batch_idx)
-		self.inference = self.define_inference(X)
+		if self.minibatch_size is not None:
+			# Create ZINBayes computation graph
+			self.define_stochastic_model(P, self.n_components)
+			inference_local, inference_global = self.define_stochastic_inference(N, P, self.n_components)
 
-		# If we want to assess convergence during inference on held-out data
-		inference_val = None
-		if self.validation and self.X_test is not None:
-			self.define_val_model(self.X_test.shape[0], P, self.n_components)
-			inference_val = self.define_val_inference(self.X_test)
+			self.run_stochastic_inference(X, inference_local, inference_global, n_iterations=max_iter)
+		else:
+			# Create ZINBayes computation graph
+			self.define_model(N, P, self.n_components, batch_idx=batch_idx)
+			self.inference = self.define_inference(X)
 
-		# Run inference
-		self.loss = self.run_inference(self.inference, inference_val=inference_val, n_iterations=max_iter)
+			# If we want to assess convergence during inference on held-out data
+			inference_val = None
+			if self.validation and self.X_test is not None:
+				self.define_val_model(self.X_test.shape[0], P, self.n_components)
+				inference_val = self.define_val_inference(self.X_test)
+
+			# Run inference
+			self.loss = self.run_inference(self.inference, inference_val=inference_val, n_iterations=max_iter)
 
 		# Get estimated variational distributions of global latent variables
 		self.est_qW0 = TransformedDistribution(
@@ -87,12 +94,13 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 			self.est_qW1 = Normal(self.qW1.loc.eval(), self.qW1.scale.eval())
 
 	def transform(self):
-		self.est_Z = self.sess.run(tf.exp(self.qz.distribution.loc))
-		if self.scalings:
-			self.est_L = self.sess.run(tf.exp(self.ql.distribution.loc))
-		self.est_X = self.posterior_nb_mean()
+		if self.minibatch_size is None:
+			self.est_Z = self.sess.run(tf.exp(self.qz.distribution.loc))
+			if self.scalings:
+				self.est_L = self.sess.run(tf.exp(self.ql.distribution.loc))
+			self.est_X = self.posterior_nb_mean()
 
-		return self.est_Z
+			return self.est_Z
 
 	def fit_transform(self, X, batch_idx=None, max_iter=100, max_time=60):
 		self.fit(X, batch_idx=batch_idx, max_iter=max_iter, max_time=60)
@@ -404,12 +412,12 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 		if self.zero_inflation:
 			self.W1 = Normal(tf.zeros([K, P]), tf.ones([K, P]))
 
-		self.z = Gamma(16. * tf.ones([M, K]), 4. * tf.ones([M, K]))
+		self.z = Gamma(2. * tf.ones([M, K]), 1. * tf.ones([M, K]))
 
 		self.r = Gamma(2. * tf.ones([P,]), 1. * tf.ones([P,]))
 
 		self.l = TransformedDistribution(
-		    distribution=Normal(self.mean_llib * tf.ones([M,1]), np.sqrt(self.std_llib) * tf.ones([M,1])),
+		    distribution=Normal(self.mean_llib * tf.ones([M,1]), self.std_llib * tf.ones([M,1])),
 		    bijector=tf.contrib.distributions.bijectors.Exp())
 
 		self.rho = tf.matmul(self.z, self.W0)
@@ -435,22 +443,22 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 	def define_stochastic_inference(self, N, P, K):
 		M = self.minibatch_size
 
-		qz_vars = [tf.Variable(tf.ones([N, K]), name='qz_loc'), tf.Variable(1. * tf.ones([N, K]), name='qz_scale')]
+		qz_vars = [tf.Variable(tf.ones([N, K]), name='qz_loc'), tf.Variable(0.01 * tf.ones([N, K]), name='qz_scale')]
 		qlam_vars = [tf.Variable(tf.ones([N, P]), name='qlam_loc'), tf.Variable(0.01 * tf.ones([N, P]), name='qlam_scale')]
-		ql_vars = [tf.Variable(mean_llib * tf.ones([N, 1]), name='ql_loc'), 
-		           tf.Variable(np.sqrt(var_llib) * tf.ones([N, 1]), name='ql_scale')]
+		ql_vars = [tf.Variable(self.mean_llib * tf.ones([N, 1]), name='ql_loc'), 
+		           tf.Variable(self.std_llib * tf.ones([N, 1]), name='ql_scale')]
 		qlocal_vars = [qz_vars, qlam_vars, ql_vars]
 		qlocal_vars = [item for sublist in qlocal_vars for item in sublist]
 
-		idx_ph = tf.placeholder(tf.int32, M)
+		self.idx_ph = tf.placeholder(tf.int32, M)
 		self.qz = TransformedDistribution(
-		    distribution=Normal(tf.gather(qlocal_vars[0], idx_ph), tf.nn.softplus(tf.gather(qlocal_vars[1], idx_ph))),
+		    distribution=Normal(tf.gather(qlocal_vars[0], self.idx_ph), tf.nn.softplus(tf.gather(qlocal_vars[1], self.idx_ph))),
 		    bijector=tf.contrib.distributions.bijectors.Exp())
 		self.qlam = TransformedDistribution(
-		    distribution=Normal(tf.gather(qlocal_vars[2], idx_ph), tf.nn.softplus(tf.gather(qlocal_vars[3], idx_ph))),
+		    distribution=Normal(tf.gather(qlocal_vars[2], self.idx_ph), tf.nn.softplus(tf.gather(qlocal_vars[3], self.idx_ph))),
 		    bijector=tf.contrib.distributions.bijectors.Exp())
 		self.ql = TransformedDistribution(
-		    distribution=Normal(tf.gather(qlocal_vars[4], idx_ph), tf.nn.softplus(tf.gather(qlocal_vars[5], idx_ph))),
+		    distribution=Normal(tf.gather(qlocal_vars[4], self.idx_ph), tf.nn.softplus(tf.gather(qlocal_vars[5], self.idx_ph))),
 		    bijector=tf.contrib.distributions.bijectors.Exp())
 
 		self.qW0 = TransformedDistribution(
@@ -461,35 +469,39 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 		    distribution=Normal(tf.Variable(tf.ones(self.r.shape)), tf.nn.softplus(tf.Variable(0.01 * tf.ones(self.r.shape)))),
 		    bijector=tf.contrib.distributions.bijectors.Exp())
 
-		x_ph = tf.placeholder(tf.float32, [M, P])
-		inference_global = ed.ReparameterizationKLqp({self.r: qr, self.W0: qW0, self.W1: qW1}, data={self.likelihood: x_ph, self.z: qz, self.lam: qlam, self.al: ql})
-		inference_local = ed.ReparameterizationKLqp({z: qz, lam: qlam, l: ql}, data={likelihood: x_ph, r: qr, W0: qW0, W1: qW1})
+		self.x_ph = tf.placeholder(tf.float32, [M, P])
+		inference_global = ed.ReparameterizationKLqp({self.r: self.qr, self.W0: self.qW0, self.W1: self.qW1}, data={self.likelihood: self.x_ph, self.z: self.qz, self.lam: self.qlam, self.l: self.ql})
+		inference_local = ed.ReparameterizationKLqp({self.z: self.qz, self.lam: self.qlam, self.l: self.ql}, data={self.likelihood: self.x_ph, self.r: self.qr, self.W0: self.qW0, self.W1: self.qW1})
 
-	def run_stochastic_inference(self, inference_local, inference_global, N, n_iterations=100):
+		return inference_local, inference_global
+
+	def run_stochastic_inference(self, X, inference_local, inference_global, n_iterations=100):
 		M = self.minibatch_size
+		N = X.shape[0]
 
 		# Run inference
 		inference_global.initialize(scale={self.likelihood: float(N) / M, self.z: float(N) / M, self.lam: float(N) / M, self.l: float(N) / M})
 		inference_local.initialize(scale={self.likelihood: float(N) / M, self.z: float(N) / M, self.lam: float(N) / M, self.l: float(N) / M})
 
+		self.sess = ed.get_session()
 		tf.global_variables_initializer().run()
 
-		loss = []
+		self.loss = []
      
 		n_iter_per_epoch = N // M
-		pbar = ed.Progbar(n_epochs)
-		for epoch in range(n_epochs):
+		pbar = ed.Progbar(n_iterations)
+		for epoch in range(n_iterations):
 		#     print("Epoch: {0}".format(epoch))
 		    avg_loss = 0.0
 
 		    for t in range(1, n_iter_per_epoch + 1):
-		        x_batch, idx_batch = next_batch(X_train, M)
+		        x_batch, idx_batch = next_batch(X, M)
 		        
 		#         inference_local.update(feed_dict={x_ph: x_batch})
 		        for _ in range(5):  # make local inferences
-		            info_dict = inference_local.update(feed_dict={x_ph: x_batch, idx_ph: idx_batch})
+		            info_dict = inference_local.update(feed_dict={self.x_ph: x_batch, self.idx_ph: idx_batch})
 
-		        info_dict = inference_global.update(feed_dict={x_ph: x_batch, idx_ph: idx_batch})
+		        info_dict = inference_global.update(feed_dict={self.x_ph: x_batch, self.idx_ph: idx_batch})
 		        avg_loss += info_dict['loss']
 		        
 		    # Print a lower bound to the average marginal likelihood for a cell
@@ -497,7 +509,7 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 		    avg_loss /= M
 
 		#     print("-log p(x) <= {:0.3f}\n".format(avg_loss), end='\r')
-		    loss.append(avg_loss)
+		    self.loss.append(avg_loss)
 		    pbar.update(epoch, values={'Loss': avg_loss})
 		    
 		inference_global.finalize()
