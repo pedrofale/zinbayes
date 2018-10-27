@@ -1,2 +1,5 @@
 # ZINBayes
-A generative model for scRNA-seq data.
+Bayesian Zero-Inflated Negative Binomial Matrix Factorization
+A Bayesian model for scRNA-seq data.
+
+Details in pre-print.
