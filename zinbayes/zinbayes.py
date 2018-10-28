@@ -7,7 +7,7 @@ from edward.models import Gamma, Poisson, Mixture, Categorical, TransformedDistr
 from sklearn.base import BaseEstimator, TransformerMixin
 
 class ZINBayes(BaseEstimator, TransformerMixin):
-	def __init__(self, n_components=10, n_mc_samples=1, zero_inflation=True, scalings=True, batch_correction=False, test_iterations=100, optimizer=None, minibatch_size=None, validation=False, X_test=None):
+	def __init__(self, n_components=10, n_mc_samples=1, gene_dispersion=True, zero_inflation=True, scalings=True, batch_correction=False, test_iterations=100, optimizer=None, minibatch_size=None, validation=False, X_test=None):
 		self.n_components = n_components
 		self.est_X = None
 		self.est_L = None
@@ -24,6 +24,10 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 		self.scalings = scalings
 		if scalings:
 			print('Considering cell-specific scalings.')
+
+		self.gene_dispersion = gene_dispersion
+		if scalings:
+			print('Considering gene-specific dispersion.')
 
 		self.n_mc_samples = n_mc_samples
 		self.test_iterations = test_iterations
@@ -136,7 +140,10 @@ class ZINBayes(BaseEstimator, TransformerMixin):
 
 		self.z = Gamma(2. * tf.ones([N, K]), 1. * tf.ones([N, K]))
 
-		self.r = Gamma(2. * tf.ones([P,]), 1. * tf.ones([P,]))
+		disp_size = 1
+		if self.gene_dispersion:
+			disp_size = P
+		self.r = Gamma(2. * tf.ones([disp_size,]), 1. * tf.ones([disp_size,]))
 
 		self.l = TransformedDistribution(
 		    distribution=Normal(self.mean_llib * tf.ones([N,1]), np.sqrt(self.std_llib) * tf.ones([N,1])),
