@@ -1,4 +1,12 @@
+numpy
 scipy
+matplotlib
+ipython
+jupyter
+pandas
+sympy
+nose
+seaborn
 tensorflow==1.5.0
 edward==1.3.5
 sklearn
