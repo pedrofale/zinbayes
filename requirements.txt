@@ -7,6 +7,6 @@ pandas
 sympy
 nose
 seaborn
-tensorflow==1.5.0
+tensorflow==1.15.4
 edward==1.3.5
 sklearn
